@@ -13,7 +13,7 @@ import modules.memmon
 import modules.sd_models
 import modules.styles
 import modules.devices as devices
-from modules import sd_samplers
+from modules import sd_samplers, sd_models
 from modules.hypernetworks import hypernetwork
 from modules.paths import models_path, script_path, sd_path
 
@@ -34,11 +34,13 @@ parser.add_argument("--hypernetwork-dir", type=str, default=os.path.join(models_
 parser.add_argument("--allow-code", action='store_true', help="allow custom script execution from webui")
 parser.add_argument("--medvram", action='store_true', help="enable stable diffusion model optimizations for sacrificing a little speed for low VRM usage")
 parser.add_argument("--lowvram", action='store_true', help="enable stable diffusion model optimizations for sacrificing a lot of speed for very low VRM usage")
+parser.add_argument("--lowram", action='store_true', help="load stable diffusion checkpoint weights to VRAM instead of RAM")
 parser.add_argument("--always-batch-cond-uncond", action='store_true', help="disables cond/uncond batching that is enabled to save memory with --medvram or --lowvram")
 parser.add_argument("--unload-gfpgan", action='store_true', help="does not do anything.")
 parser.add_argument("--precision", type=str, help="evaluate at this precision", choices=["full", "autocast"], default="autocast")
 parser.add_argument("--share", action='store_true', help="use share=True for gradio and make the UI accessible through their site (doesn't work for me but you might have better luck)")
 parser.add_argument("--ngrok", type=str, help="ngrok authtoken, alternative to gradio --share", default=None)
+parser.add_argument("--ngrok-region", type=str, help="The region in which ngrok should start.", default="us")
 parser.add_argument("--codeformer-models-path", type=str, help="Path to directory with codeformer model file(s).", default=os.path.join(models_path, 'Codeformer'))
 parser.add_argument("--gfpgan-models-path", type=str, help="Path to directory with GFPGAN model file(s).", default=os.path.join(models_path, 'GFPGAN'))
 parser.add_argument("--esrgan-models-path", type=str, help="Path to directory with ESRGAN model file(s).", default=os.path.join(models_path, 'ESRGAN'))
@@ -54,7 +56,7 @@ parser.add_argument("--opt-split-attention", action='store_true', help="force-en
 parser.add_argument("--opt-split-attention-invokeai", action='store_true', help="force-enables InvokeAI's cross-attention layer optimization. By default, it's on when cuda is unavailable.")
 parser.add_argument("--opt-split-attention-v1", action='store_true', help="enable older version of split attention optimization that does not consume all the VRAM it can find")
 parser.add_argument("--disable-opt-split-attention", action='store_true', help="force-disables cross-attention layer optimization")
-parser.add_argument("--use-cpu", nargs='+',choices=['SD', 'GFPGAN', 'BSRGAN', 'ESRGAN', 'SCUNet', 'CodeFormer'], help="use CPU as torch device for specified modules", default=[])
+parser.add_argument("--use-cpu", nargs='+',choices=['all', 'sd', 'interrogate', 'gfpgan', 'bsrgan', 'esrgan', 'scunet', 'codeformer'], help="use CPU as torch device for specified modules", default=[], type=str.lower)
 parser.add_argument("--listen", action='store_true', help="launch gradio with 0.0.0.0 as server name, allowing to respond to network requests")
 parser.add_argument("--port", type=int, help="launch gradio with given server port, you need root/admin rights for ports < 1024, defaults to 7860 if available", default=None)
 parser.add_argument("--show-negative-prompt", action='store_true', help="does not do anything", default=False)
@@ -76,16 +78,18 @@ parser.add_argument("--disable-safe-unpickle", action='store_true', help="disabl
 
 cmd_opts = parser.parse_args()
 
-devices.device, devices.device_gfpgan, devices.device_bsrgan, devices.device_esrgan, devices.device_scunet, devices.device_codeformer = \
-(devices.cpu if x in cmd_opts.use_cpu else devices.get_optimal_device() for x in ['SD', 'GFPGAN', 'BSRGAN', 'ESRGAN', 'SCUNet', 'CodeFormer'])
+devices.device, devices.device_interrogate, devices.device_gfpgan, devices.device_bsrgan, devices.device_esrgan, devices.device_scunet, devices.device_codeformer = \
+(devices.cpu if any(y in cmd_opts.use_cpu for y in [x, 'all']) else devices.get_optimal_device() for x in ['sd', 'interrogate', 'gfpgan', 'bsrgan', 'esrgan', 'scunet', 'codeformer'])
 
 device = devices.device
+weight_load_location = None if cmd_opts.lowram else "cpu"
 
 batch_cond_uncond = cmd_opts.always_batch_cond_uncond or not (cmd_opts.lowvram or cmd_opts.medvram)
 parallel_processing_allowed = not cmd_opts.lowvram and not cmd_opts.medvram
 xformers_available = False
 config_filename = cmd_opts.ui_settings_file
 
+os.makedirs(cmd_opts.hypernetwork_dir, exist_ok=True)
 hypernetworks = hypernetwork.list_hypernetworks(cmd_opts.hypernetwork_dir)
 loaded_hypernetwork = None
 
@@ -144,14 +148,14 @@ def realesrgan_models_names():
 
 
 class OptionInfo:
-    def __init__(self, default=None, label="", component=None, component_args=None, onchange=None, show_on_main_page=False):
+    def __init__(self, default=None, label="", component=None, component_args=None, onchange=None, show_on_main_page=False, refresh=None):
         self.default = default
         self.label = label
         self.component = component
         self.component_args = component_args
         self.onchange = onchange
         self.section = None
-        self.show_on_main_page = show_on_main_page
+        self.refresh = refresh
 
 
 def options_section(section_identifier, options_dict):
@@ -174,6 +178,7 @@ options_templates.update(options_section(('saving-images', "Saving images/grids|
     "grid_format": OptionInfo('png', 'File format for grids|网格的文件格式'),
     "grid_extended_filename": OptionInfo(False, "Add extended info (seed, prompt) to filename when saving grid|保存网格时将扩展信息（随机种、提示词）添加到文件名"),
     "grid_only_if_multiple": OptionInfo(True, "Do not save grids consisting of one picture|不保存包含一张图片的网格"),
+    "grid_prevent_empty_spots": OptionInfo(False, "Prevent empty spots in grid (when set to autodetect)防止网格中出现空白点（当设置为自动检测时）"),
     "n_rows": OptionInfo(-1, "Grid row count; use -1 for autodetect and 0 for it to be same as batch size|网格行计数；使用-1表示自动检测，使用0表示与批大小相同", gr.Slider, {"minimum": -1, "maximum": 16, "step": 1}),
 
     "enable_pnginfo": OptionInfo(True, "Save text information about generation parameters as chunks to png files|将有关生成参数的文本信息作为块保存到png文件"),
@@ -187,7 +192,7 @@ options_templates.update(options_section(('saving-images', "Saving images/grids|
     "do_not_add_watermark": OptionInfo(False, "Do not add watermark to images|不向图像添加水印"),
 }))
 
-options_templates.update(options_section(('saving-paths', "Paths for saving"), {
+options_templates.update(options_section(('saving-paths', "Paths for saving|保存路径"), {
     "outdir_samples": OptionInfo("", "Output directory for images; if empty, defaults to three directories below|图像输出目录；如果为空，则默认为以下三个目录", component_args=hide_dirs),
     "outdir_txt2img_samples": OptionInfo("outputs/txt2img-images", 'Output directory for txt2img images|文本到图像的输出目录', component_args=hide_dirs),
     "outdir_img2img_samples": OptionInfo("outputs/img2img-images", 'Output directory for img2img images|图像到图像的输出目录', component_args=hide_dirs),
@@ -198,12 +203,12 @@ options_templates.update(options_section(('saving-paths', "Paths for saving"), {
     "outdir_save": OptionInfo("log/images", "Directory for saving images using the Save button|使用“保存”按钮保存图像的目录", component_args=hide_dirs),
 }))
 
-options_templates.update(options_section(('saving-to-dirs', "Saving to a directory|保存到一个目录"), {
+options_templates.update(options_section(('saving-to-dirs', "Saving to a directory|保存到目录"), {
     "save_to_dirs": OptionInfo(False, "Save images to a subdirectory|将图像保存到子目录"),
     "grid_save_to_dirs": OptionInfo(False, "Save grids to a subdirectory|将网格保存到子目录"),
     "use_save_to_dirs_for_ui": OptionInfo(False, "When using \"Save\" button, save images to a subdirectory|使用“保存”按钮时，将图像保存到子目录"),
     "directories_filename_pattern": OptionInfo("", "Directory name pattern|目录名称模式"),
-    "directories_max_prompt_words": OptionInfo(8, "Max prompt words for [prompt_words] pattern| 最大[prompt_words] 样式提示词数量", gr.Slider, {"minimum": 1, "maximum": 20, "step": 1}),
+    "directories_max_prompt_words": OptionInfo(8, "Max prompt words for [prompt_words] pattern|最大[prompt_words] 样式提示词数量", gr.Slider, {"minimum": 1, "maximum": 20, "step": 1}),
 }))
 
 options_templates.update(options_section(('upscaling', "Upscaling|放大"), {
@@ -214,6 +219,7 @@ options_templates.update(options_section(('upscaling', "Upscaling|放大"), {
     "SWIN_tile_overlap": OptionInfo(8, "Tile overlap, in pixels for SwinIR. Low values = visible seam.|SwinIR放大器的平铺重叠，低数值=可见接缝", gr.Slider, {"minimum": 0, "maximum": 48, "step": 1}),
     "ldsr_steps": OptionInfo(100, "LDSR processing steps. Lower = faster|LDSR处理步数。更低=更快", gr.Slider, {"minimum": 1, "maximum": 200, "step": 1}),
     "upscaler_for_img2img": OptionInfo(None, "Upscaler for img2img|图像到图像的放大器", gr.Dropdown, lambda: {"choices": [x.name for x in sd_upscalers]}),
+    "use_scale_latent_for_hires_fix": OptionInfo(False, "Upscale latent space image when doing hires. fix|高分修正时对潜在空间图像使用超采样"),
 }))
 
 options_templates.update(options_section(('face-restoration', "Face restoration|脸部修复"), {
@@ -229,18 +235,24 @@ options_templates.update(options_section(('system', "System|系统"), {
 }))
 
 options_templates.update(options_section(('training', "Training|训练"), {
-    "unload_models_when_training": OptionInfo(False, "Unload VAE and CLIP form VRAM when training|训练时从VRAM中卸载VAE和CLIP"),
+    "unload_models_when_training": OptionInfo(False, "Unload VAE and CLIP from VRAM when training|训练时从VRAM中卸载VAE和CLIP"),
+    "dataset_filename_word_regex": OptionInfo("", "Filename word regex|文件名词条正则"),
+    "dataset_filename_join_string": OptionInfo(" ", "Filename join string|文件名加入字符串"),
+    "training_image_repeats_per_epoch": OptionInfo(1, "Number of repeats for a single input image per epoch; used only for displaying epoch number|每个纪元单个输入图像的重复次数；仅用于显示纪元编号", gr.Number, {"precision": 0}),
+    "training_write_csv_every": OptionInfo(500, "Save an csv containing the loss to log directory every N steps, 0 to disable|每N步保存一个包含丢失的csv到日志目录，0为禁用"),
 }))
 
-options_templates.update(options_section(('sd', "Stable Diffusion"), {
-    "sd_model_checkpoint": OptionInfo(None, "Stable Diffusion checkpoint|稳定扩散检查点", gr.Dropdown, lambda: {"choices": modules.sd_models.checkpoint_tiles()}, show_on_main_page=True),
-    "sd_hypernetwork": OptionInfo("None", "Stable Diffusion finetune hypernetwork|稳定扩散微调超网络", gr.Dropdown, lambda: {"choices": ["None"] + [x for x in hypernetworks.keys()]}),
+options_templates.update(options_section(('sd', "Stable Diffusion|稳定扩散"), {
+    "sd_model_checkpoint": OptionInfo(None, "Stable Diffusion checkpoint|稳定扩散检查点", gr.Dropdown, lambda: {"choices": modules.sd_models.checkpoint_tiles()}, refresh=sd_models.list_models),
+    "sd_checkpoint_cache": OptionInfo(0, "Checkpoints to cache in RAM|在RAM内存中缓存检查点", gr.Slider, {"minimum": 0, "maximum": 10, "step": 1}),
+    "sd_hypernetwork": OptionInfo("None", "Hypernetwork", gr.Dropdown, lambda: {"choices": ["None"] + [x for x in hypernetworks.keys()]}, refresh=reload_hypernetworks),
+    "sd_hypernetwork_strength": OptionInfo(1.0, "Hypernetwork strength超网格强度", gr.Slider, {"minimum": 0.0, "maximum": 1.0, "step": 0.001}),
     "img2img_color_correction": OptionInfo(False, "Apply color correction to img2img results to match original colors.|对图像到图像结果应用颜色校正以匹配原始颜色。"),
-    "save_images_before_color_correction": OptionInfo(False, "Save a copy of image before applying color correction to img2img results|在对图像到图像结果应用颜色校正之前保存图像副本"),
+    "save_images_before_color_correction": OptionInfo(False, "Save a copy of image before applying color correction to img2img results|在对img2img图像到图像结果应用颜色校正之前保存图像副本"),
     "img2img_fix_steps": OptionInfo(False, "With img2img, do exactly the amount of steps the slider specifies (normally you'd do less with less denoising).|使用图像到图像，精确执行滑块指定的步数（通常，您可以用更少的降噪来减少步数）"),
     "enable_quantization": OptionInfo(False, "Enable quantization in K samplers for sharper and cleaner results. This may change existing seeds. Requires restart to apply.|在K-diffusion采样器中启用量化，以获得更清晰的结果。这可能会改变现有随机种。需要重新启动才能应用"),
     "enable_emphasis": OptionInfo(True, "Emphasis: use (text) to make model pay more attention to text and [text] to make it pay less attention|强调：使用（文本）使模型更加关注文本，而使用[文本]使其更加关注"),
-    "use_old_emphasis_implementation": OptionInfo(False, "Use old emphasis implementation. Can be useful to reproduce old seeds.|使用旧的强调实现。可以用来传递旧随机种。"),
+    "use_old_emphasis_implementation": OptionInfo(False, "Use old emphasis implementation. Can be useful to reproduce old seeds.|使用旧的强调实现。可以用来传递旧随机种"),
     "enable_batch_seeds": OptionInfo(True, "Make K-diffusion samplers produce same images in a batch as when making a single image|使K-diffusion采样器批量生成与生成单个图像时相同的图像"),
     "comma_padding_backtrack": OptionInfo(20, "Increase coherency by padding from the last comma within n tokens when using more than 75 tokens|当使用超过75个标记时，通过从n个标记中的最后一个逗号填充来提高一致性", gr.Slider, {"minimum": 0, "maximum": 74, "step": 1 }),
     "filter_nsfw": OptionInfo(False, "Filter NSFW content|过滤NSFW（可能社死）内容"),
@@ -251,11 +263,15 @@ options_templates.update(options_section(('sd', "Stable Diffusion"), {
 options_templates.update(options_section(('interrogate', "Interrogate Options|查询选项(反向训练、反求提示词)"), {
     "interrogate_keep_models_in_memory": OptionInfo(False, "Interrogate: keep models in VRAM|查询：将模型保存在VRAM(显存)中"),
     "interrogate_use_builtin_artists": OptionInfo(True, "Interrogate: use artists from artists.csv|查询：使用artists.csv中的艺术家"),
+    "interrogate_return_ranks": OptionInfo(False, "Interrogate: include ranks of model tags matches in results (Has no effect on caption-based interrogators)."),
     "interrogate_clip_num_beams": OptionInfo(1, "Interrogate: num_beams for BLIP|查询：BLIP的num_beams", gr.Slider, {"minimum": 1, "maximum": 16, "step": 1}),
     "interrogate_clip_min_length": OptionInfo(24, "Interrogate: minimum description length (excluding artists, etc..)|查询：最小描述长度（不包括艺术家等）", gr.Slider, {"minimum": 1, "maximum": 128, "step": 1}),
     "interrogate_clip_max_length": OptionInfo(48, "Interrogate: maximum description length|查询：最大描述长度", gr.Slider, {"minimum": 1, "maximum": 256, "step": 1}),
-    "interrogate_clip_dict_limit": OptionInfo(1500, "Interrogate: maximum number of lines in text file (0 = No limit)|查询：文本文件中的最大行数（0=无限制）"),
+    "interrogate_clip_dict_limit": OptionInfo(1500, "CLIP: maximum number of lines in text file (0 = No limit)|查询：文本文件中的最大行数（0=无限制）"),
     "interrogate_deepbooru_score_threshold": OptionInfo(0.5, "Interrogate: deepbooru score threshold|查询：deepbooru分数阈值", gr.Slider, {"minimum": 0, "maximum": 1, "step": 0.01}),
+    "deepbooru_sort_alpha": OptionInfo(True, "Interrogate: deepbooru sort alphabetically|查询：deepbooru按字母顺序排序"),
+    "deepbooru_use_spaces": OptionInfo(False, "use spaces for tags in deepbooru在deepbooru中为标记使用空格"),
+    "deepbooru_escape": OptionInfo(True, "escape (\\) brackets in deepbooru (so they are used as literal brackets and not for emphasis)deepbooru中的escape（\\）括号（因此它们用作文字括号，而不是强调）"),
 }))
 
 options_templates.update(options_section(('ui', "User interface|用户界面"), {
@@ -269,6 +285,7 @@ options_templates.update(options_section(('ui', "User interface|用户界面"), 
     "js_modal_lightbox": OptionInfo(True, "Enable full page image viewer|启用整页图像查看器"),
     "js_modal_lightbox_initially_zoomed": OptionInfo(True, "Show images zoomed in by default in full page image viewer|在整页图像查看器中显示默认放大的图像"),
     "show_progress_in_title": OptionInfo(True, "Show generation progress in window title.|在窗口标题中显示生成进度"),
+    'quicksettings': OptionInfo("sd_model_checkpoint", "Quicksettings list|快速设置列表"),
 }))
 
 options_templates.update(options_section(('sampler-params', "Sampler parameters|采样器参数"), {
@@ -338,6 +355,8 @@ class Options:
     def onchange(self, key, func):
         item = self.data_labels.get(key)
         item.onchange = func
+
+        func()
 
     def dumpjson(self):
         d = {k: self.data.get(k, self.data_labels.get(k).default) for k in self.data_labels.keys()}

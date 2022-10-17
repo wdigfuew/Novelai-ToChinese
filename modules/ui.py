@@ -7,6 +7,7 @@ import mimetypes
 import os
 import random
 import sys
+import tempfile
 import time
 import traceback
 import platform
@@ -22,7 +23,7 @@ import gradio as gr
 import gradio.utils
 import gradio.routes
 
-from modules import sd_hijack
+from modules import sd_hijack, sd_models
 from modules.paths import script_path
 from modules.shared import opts, cmd_opts
 if cmd_opts.deepdanbooru:
@@ -40,6 +41,7 @@ from modules import prompt_parser
 from modules.images import save_image
 import modules.textual_inversion.ui
 import modules.hypernetworks.ui
+import modules.images_history as img_his
 
 # this is a fix for Windows users. Without it, javascript files will be served with text/html content-type and the browser will not show any UI
 mimetypes.init()
@@ -54,7 +56,7 @@ if not cmd_opts.share and not cmd_opts.listen:
 if cmd_opts.ngrok != None:
     import modules.ngrok as ngrok
     print('ngrok authtoken detected, trying to connect...')
-    ngrok.connect(cmd_opts.ngrok, cmd_opts.port if cmd_opts.port != None else 7860)
+    ngrok.connect(cmd_opts.ngrok, cmd_opts.port if cmd_opts.port != None else 7860, cmd_opts.ngrok_region)
 
 
 def gr_show(visible=True):
@@ -66,7 +68,7 @@ sample_img2img = sample_img2img if os.path.exists(sample_img2img) else None
 
 css_hide_progressbar = """
 .wrap .m-12 svg { display:none!important; }
-.wrap .m-12::before { content:"Loading..." }
+.wrap .m-12::before { content:"\u5f00\u6e90\u4e2d\u6587\u7ffb\u8bd1\u65e0\u507f\u5171\u4eab\uff0c\u4e0d\u8981\u88ab\u67d0\u5b9d\u9a97\u4e86\u554a..." }
 .progress-bar { display:none!important; }
 .meta-text { display:none!important; }
 """
@@ -78,6 +80,10 @@ reuse_symbol = '\u267b\ufe0f'  # ♻️
 art_symbol = '\U0001f3a8'  # 🎨
 paste_symbol = '\u2199\ufe0f'  # ↙
 folder_symbol = '\U0001f4c2'  # 📂
+refresh_symbol = '\U0001f504'  # 🔄
+save_style_symbol = '\U0001f4be'  # 💾
+apply_style_symbol = '\U0001f4cb'  # 📋
+
 
 def plaintext_to_html(text):
     text = "<p>" + "<br>\n".join([f"{html.escape(x)}" for x in text.split('\n')]) + "</p>"
@@ -85,6 +91,14 @@ def plaintext_to_html(text):
 
 
 def image_from_url_text(filedata):
+    if type(filedata) == dict and filedata["is_file"]:
+        filename = filedata["name"]
+        tempdir = os.path.normpath(tempfile.gettempdir())
+        normfn = os.path.normpath(filename)
+        assert normfn.startswith(tempdir), '试图打开不在临时目录中的图像文件'
+
+        return Image.open(filename)
+
     if type(filedata) == list:
         if len(filedata) == 0:
             return None
@@ -107,7 +121,7 @@ def send_gradio_gallery_to_image(x):
 
 
 def save_files(js_data, images, do_make_zip, index):
-    import csv    
+    import csv
     filenames = []
     fullfns = []
 
@@ -131,6 +145,8 @@ def save_files(js_data, images, do_make_zip, index):
         images = [images[index]]
         start_index = index
 
+    os.makedirs(opts.outdir_save, exist_ok=True)
+
     with open(os.path.join(opts.outdir_save, "log.csv"), "a", encoding="utf8", newline='') as file:
         at_start = file.tell() == 0
         writer = csv.writer(file)
@@ -138,10 +154,7 @@ def save_files(js_data, images, do_make_zip, index):
             writer.writerow(["prompt", "seed", "width", "height", "sampler", "cfgs", "steps", "filename", "negative_prompt"])
 
         for image_index, filedata in enumerate(images, start_index):
-            if filedata.startswith("data:image/png;base64,"):
-                filedata = filedata[len("data:image/png;base64,"):]
-
-            image = Image.open(io.BytesIO(base64.decodebytes(filedata.encode('utf-8'))))
+            image = image_from_url_text(filedata)
 
             is_grid = image_index < p.index_of_first_image
             i = 0 if is_grid else (image_index - p.index_of_first_image)
@@ -171,6 +184,23 @@ def save_files(js_data, images, do_make_zip, index):
     return gr.File.update(value=fullfns, visible=True), '', '', plaintext_to_html(f"Saved: {filenames[0]}")
 
 
+def save_pil_to_file(pil_image, dir=None):
+    use_metadata = False
+    metadata = PngImagePlugin.PngInfo()
+    for key, value in pil_image.info.items():
+        if isinstance(key, str) and isinstance(value, str):
+            metadata.add_text(key, value)
+            use_metadata = True
+
+    file_obj = tempfile.NamedTemporaryFile(delete=False, suffix=".png", dir=dir)
+    pil_image.save(file_obj, pnginfo=(metadata if use_metadata else None))
+    return file_obj
+
+
+# override save to file function so that it also writes PNG info
+gr.processing_utils.save_pil_to_file = save_pil_to_file
+
+
 def wrap_gradio_call(func, extra_outputs=None):
     def f(*args, extra_outputs_array=extra_outputs, **kwargs):
         run_memmon = opts.memmon_poll_rate > 0 and not shared.mem_mon.disabled
@@ -181,8 +211,15 @@ def wrap_gradio_call(func, extra_outputs=None):
         try:
             res = list(func(*args, **kwargs))
         except Exception as e:
+            # When printing out our debug argument list, do not print out more than a MB of text
+            max_debug_str_len = 131072 # (1024*1024)/8
+
             print("Error completing request", file=sys.stderr)
-            print("Arguments:", args, kwargs, file=sys.stderr)
+            argStr = f"Arguments: {str(args)} {str(kwargs)}"
+            print(argStr[:max_debug_str_len], file=sys.stderr)
+            if len(argStr) > max_debug_str_len:
+                print(f"(Argument list truncated at {max_debug_str_len}/{len(argStr)} characters)", file=sys.stderr)
+
             print(traceback.format_exc(), file=sys.stderr)
 
             shared.state.job = ""
@@ -292,7 +329,7 @@ def visit(x, func, path=""):
 
 def add_style(name: str, prompt: str, negative_prompt: str):
     if name is None:
-        return [gr_show(), gr_show()]
+        return [gr_show() for x in range(4)]
 
     style = modules.styles.PromptStyle(name, prompt, negative_prompt)
     shared.prompt_styles.styles[style.name] = style
@@ -317,7 +354,7 @@ def interrogate(image):
 
 
 def interrogate_deepbooru(image):
-    prompt = get_deepbooru_tags(image, opts.interrogate_deepbooru_score_threshold)
+    prompt = get_deepbooru_tags(image)
     return gr_show(True) if prompt is None else prompt
 
 
@@ -331,7 +368,7 @@ def create_seed_inputs():
                 reuse_seed = gr.Button(reuse_symbol, elem_id='reuse_seed')
 
         with gr.Box(elem_id='subseed_show_box'):
-            seed_checkbox = gr.Checkbox(label='附加', elem_id='subseed_show', value=False)
+            seed_checkbox = gr.Checkbox(label='Extra|附加', elem_id='subseed_show', value=False)
 
     # Components to show/hide based on the 'Extra' checkbox
     seed_extras = []
@@ -417,30 +454,38 @@ def create_toprow(is_img2img):
     id_part = "img2img" if is_img2img else "txt2img"
 
     with gr.Row(elem_id="toprow"):
-        with gr.Column(scale=4):
+        with gr.Column(scale=6):
             with gr.Row():
                 with gr.Column(scale=80):
                     with gr.Row():
-                        prompt = gr.Textbox(label="Prompt", elem_id=f"{id_part}_prompt", show_label=False, placeholder="Prompt|特征提示词\n高级语法:\n1普通强调=(强调词),示例桌子上放着一瓶(可乐)-此时程序将会更关注括号里的(可乐),注意防翻车最好用英文括号,括号可以多重\n2权重强调=(强调词:1.4),示例(桌子:1.2)上放着一瓶(可乐:3.5)-此时程序会更加注意权重较大的(可乐:3.5)，快捷技巧-选中词按ctrl+上/下箭头可快速设置权重\n使用建议：\n提升质量=最前方添加像masterpiece,best quality等表述质量的词(例如杰作、最佳质量),必要情况可以加括号强调\n描述法：\n良好表述=下定义+关键词+尽可能“准确”的定义\n下定义=这是一幅XX风格的XX类型XX图(例如这是一幅维多利亚风格的动画概念图)\n关键词=质量相关、风格相关的词语，必要时加强调\n尽可能准确=场景里是什么有什么、人物有几个穿着什么(可具体到身体部位)、姿势如何、表情如何、年龄如何\n示例(需要翻译为英文)：杰作,令人惊叹,最佳质量,这是一幅令人惊叹的维多利亚风格动漫肖像画：在教堂的王座上，坐着一个身穿豪华白色婚纱的金发猫耳少女，表情庄严，教堂里闪着黑色的圣光，充满神圣感", lines=2)
-
-                with gr.Column(scale=1, elem_id="roll_col"):
-                    roll = gr.Button(value=art_symbol, elem_id="roll", visible=len(shared.artist_db.artists) > 0)
-                    paste = gr.Button(value=paste_symbol, elem_id="paste")
-                    token_counter = gr.HTML(value="<span></span>", elem_id=f"{id_part}_token_counter")
-                    token_button = gr.Button(visible=False, elem_id=f"{id_part}_token_button")
-
-                with gr.Column(scale=10, elem_id="style_pos_col"):
-                    prompt_style = gr.Dropdown(label="Style 1", elem_id=f"{id_part}_style_index", choices=[k for k, v in shared.prompt_styles.styles.items()], value=next(iter(shared.prompt_styles.styles.keys())), visible=len(shared.prompt_styles.styles) > 1)
+                        prompt = gr.Textbox(label="Prompt", elem_id=f"{id_part}_prompt", show_label=False, lines=2, 
+                            placeholder="Prompt|特征提示词(按Ctrl+Enter或Alt+Enter创建)\n高级语法:\n1普通强调=(强调词),示例桌子上放着一瓶(可乐)-此时程序将会更关注括号里的(可乐),注意防翻车最好用英文括号,括号可以多重\n2权重强调=(强调词:1.4),示例(桌子:1.2)上放着一瓶(可乐:3.5)-此时程序会更加注意权重较大的(可乐:3.5)，快捷技巧-选中词按ctrl+上/下箭头可快速设置权重\n使用建议：\n提升质量=最前方添加像masterpiece,best quality等表述质量的词(例如杰作、最佳质量),必要情况可以加括号强调\n描述法：\n良好表述=下定义+关键词+尽可能“准确”的定义\n下定义=这是一幅XX风格的XX类型XX图(例如这是一幅维多利亚风格的动画概念图)\n关键词=质量相关、风格相关的词语，必要时加强调\n尽可能准确=场景里是什么有什么、人物有几个穿着什么(可具体到身体部位)、姿势如何、表情如何、年龄如何\n示例(需要翻译为英文)：杰作,令人惊叹,最佳质量,这是一幅令人惊叹的维多利亚风格动漫肖像画：在教堂的王座上，坐着一个身穿豪华白色婚纱的金发猫耳少女，表情庄严，教堂里闪着黑色的圣光，充满神圣感"
+                        )
 
             with gr.Row():
-                with gr.Column(scale=8):
+                with gr.Column(scale=80):
                     with gr.Row():
-                        negative_prompt = gr.Textbox(label="Negative prompt", elem_id="negative_prompt", show_label=False, placeholder="Negative prompt|否定提示词,用来过滤一些不好的特征\n使用建议:\n防翻车咒语=nsfw, lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry", lines=2)
-                with gr.Column(scale=1, elem_id="roll_col"):
-                    sh = gr.Button(elem_id="sh", visible=True)                           
+                        negative_prompt = gr.Textbox(label="Negative prompt", elem_id=f"{id_part}_neg_prompt", show_label=False, lines=2, 
+                            placeholder="Negative prompt(按Ctrl+Enter或Alt+Enter创建)|否定提示词,用来过滤一些不好的特征\n使用建议:\n防翻车咒语=nsfw, lowres, bad anatomy, bad hands, text, error, missing fingers, extra digit, fewer digits, cropped, worst quality, low quality, normal quality, jpeg artifacts, signature, watermark, username, blurry"
+                        )
 
-                with gr.Column(scale=1, elem_id="style_neg_col"):
-                    prompt_style2 = gr.Dropdown(label="Style 2", elem_id=f"{id_part}_style2_index", choices=[k for k, v in shared.prompt_styles.styles.items()], value=next(iter(shared.prompt_styles.styles.keys())), visible=len(shared.prompt_styles.styles) > 1)
+        with gr.Column(scale=1, elem_id="roll_col"):
+            roll = gr.Button(value=art_symbol, elem_id="roll", visible=len(shared.artist_db.artists) > 0)
+            paste = gr.Button(value=paste_symbol, elem_id="paste")
+            save_style = gr.Button(value=save_style_symbol, elem_id="style_create")
+            prompt_style_apply = gr.Button(value=apply_style_symbol, elem_id="style_apply")
+
+            token_counter = gr.HTML(value="<span></span>", elem_id=f"{id_part}_token_counter")
+            token_button = gr.Button(visible=False, elem_id=f"{id_part}_token_button")
+
+        button_interrogate = None
+        button_deepbooru = None
+        if is_img2img:
+            with gr.Column(scale=1, elem_id="interrogate_col"):
+                button_interrogate = gr.Button('Interrogate CLIP\n词条反求', elem_id="interrogate")
+
+                if cmd_opts.deepdanbooru:
+                    button_deepbooru = gr.Button('Interrogate\nDeepBooru反求', elem_id="deepbooru")
 
         with gr.Column(scale=1):
             with gr.Row():
@@ -460,20 +505,16 @@ def create_toprow(is_img2img):
                     outputs=[],
                 )
 
-            with gr.Row(scale=1):
-                if is_img2img:
-                    interrogate = gr.Button('Interrogate CLIP\n词条反求', elem_id="interrogate")
-                    if cmd_opts.deepdanbooru:
-                        deepbooru = gr.Button('Interrogate\nDeepBooru', elem_id="deepbooru")
-                    else:
-                        deepbooru = None
-                else:
-                    interrogate = None
-                    deepbooru = None
-                prompt_style_apply = gr.Button('Apply style|应用风格', elem_id="style_apply")
-                save_style = gr.Button('Create style|创建风格', elem_id="style_create")
+            with gr.Row():
+                with gr.Column(scale=1, elem_id="style_pos_col"):
+                    prompt_style = gr.Dropdown(label="Style 1|风格1", elem_id=f"{id_part}_style_index", choices=[k for k, v in shared.prompt_styles.styles.items()], value=next(iter(shared.prompt_styles.styles.keys())))
+                    prompt_style.save_to_config = True
 
-    return prompt, roll, prompt_style, negative_prompt, prompt_style2, submit, interrogate, deepbooru, prompt_style_apply, save_style, paste, token_counter, token_button
+                with gr.Column(scale=1, elem_id="style_neg_col"):
+                    prompt_style2 = gr.Dropdown(label="Style 2|风格2", elem_id=f"{id_part}_style2_index", choices=[k for k, v in shared.prompt_styles.styles.items()], value=next(iter(shared.prompt_styles.styles.keys())))
+                    prompt_style2.save_to_config = True
+
+    return prompt, roll, prompt_style, negative_prompt, prompt_style2, submit, button_interrogate, button_deepbooru, prompt_style_apply, save_style, paste, token_counter, token_button
 
 
 def setup_progressbar(progressbar, preview, id_part, textinfo=None):
@@ -497,13 +538,58 @@ def setup_progressbar(progressbar, preview, id_part, textinfo=None):
     )
 
 
+def apply_setting(key, value):
+    if value is None:
+        return gr.update()
+
+    if key == "sd_model_checkpoint":
+        ckpt_info = sd_models.get_closet_checkpoint_match(value)
+
+        if ckpt_info is not None:
+            value = ckpt_info.title
+        else:
+            return gr.update()
+
+    comp_args = opts.data_labels[key].component_args
+    if comp_args and isinstance(comp_args, dict) and comp_args.get('visible') is False:
+        return
+
+    valtype = type(opts.data_labels[key].default)
+    oldval = opts.data[key]
+    opts.data[key] = valtype(value) if valtype != type(None) else value
+    if oldval != value and opts.data_labels[key].onchange is not None:
+        opts.data_labels[key].onchange()
+
+    opts.save(shared.config_filename)
+    return value
+
+
 def create_ui(wrap_gradio_gpu_call):
     import modules.img2img
     import modules.txt2img
 
+    def create_refresh_button(refresh_component, refresh_method, refreshed_args, elem_id):
+        def refresh():
+            refresh_method()
+            args = refreshed_args() if callable(refreshed_args) else refreshed_args
+
+            for k, v in args.items():
+                setattr(refresh_component, k, v)
+
+            return gr.update(**(args or {}))
+
+        refresh_button = gr.Button(value=refresh_symbol, elem_id=elem_id)
+        refresh_button.click(
+            fn = refresh,
+            inputs = [],
+            outputs = [refresh_component]
+        )
+        return refresh_button
+
     with gr.Blocks(analytics_enabled=False) as txt2img_interface:
-        txt2img_prompt, roll, txt2img_prompt_style, txt2img_negative_prompt, txt2img_prompt_style2, submit, _, _, txt2img_prompt_style_apply, txt2img_save_style, paste, token_counter, token_button = create_toprow(is_img2img=False)
+        txt2img_prompt, roll, txt2img_prompt_style, txt2img_negative_prompt, txt2img_prompt_style2, submit, _, _, txt2img_prompt_style_apply, txt2img_save_style, txt2img_paste, token_counter, token_button = create_toprow(is_img2img=False)
         dummy_component = gr.Label(visible=False)
+        txt_prompt_img = gr.File(label="", elem_id="txt2img_prompt_image", file_count="single", type="bytes", visible=False)
 
         with gr.Row(elem_id='txt2img_progress_row'):
             with gr.Column(scale=1):
@@ -516,7 +602,7 @@ def create_ui(wrap_gradio_gpu_call):
 
         with gr.Row().style(equal_height=False):
             with gr.Column(variant='panel'):
-                steps = gr.Slider(minimum=1, maximum=150, step=1, label="Sampling Steps|采样步数", value=20)
+                steps = gr.Slider(minimum=1, maximum=150, step=1, label="Sampling Steps|采样步数", value=40)
                 sampler_index = gr.Radio(label='Sampling method|采样算法', elem_id="txt2img_sampling", choices=[x.name for x in samplers], value=samplers[0].name, type="index")
 
                 with gr.Group():
@@ -529,14 +615,15 @@ def create_ui(wrap_gradio_gpu_call):
                     enable_hr = gr.Checkbox(label='Highres. fix|高分辨率修正', value=False)
 
                 with gr.Row(visible=False) as hr_options:
-                    scale_latent = gr.Checkbox(label='Scale latent|潜在空间放大', value=False)
+                    firstphase_width = gr.Slider(minimum=0, maximum=1024, step=64, label="Firstpass width|第一次处理宽度", value=0)
+                    firstphase_height = gr.Slider(minimum=0, maximum=1024, step=64, label="Firstpass height|第一次处理高度", value=0)
                     denoising_strength = gr.Slider(minimum=0.0, maximum=1.0, step=0.01, label='Denoising strength|降噪强度', value=0.7)
 
                 with gr.Row():
                     batch_count = gr.Slider(minimum=1, step=1, label='Batch count|批次数量', value=1)
                     batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Batch size|单批数量', value=1)
 
-                cfg_scale = gr.Slider(minimum=1.0, maximum=30.0, step=0.5, label='CFG Scale|分类自由引导系数', value=7.0)
+                cfg_scale = gr.Slider(minimum=1.0, maximum=30.0, step=0.1, label='CFG Scale|分类自由引导系数', value=12.0)
 
                 seed, reuse_seed, subseed, reuse_subseed, subseed_strength, seed_resize_from_h, seed_resize_from_w, seed_checkbox = create_seed_inputs()
 
@@ -549,7 +636,7 @@ def create_ui(wrap_gradio_gpu_call):
                     txt2img_preview = gr.Image(elem_id='txt2img_preview', visible=False)
                     txt2img_gallery = gr.Gallery(label='Output', show_label=False, elem_id='txt2img_gallery').style(grid=4)
 
-                with gr.Group():
+                with gr.Column():
                     with gr.Row():
                         save = gr.Button('Save|保存')
                         send_to_img2img = gr.Button('Send to img2img|发送到图像到图像')
@@ -558,11 +645,11 @@ def create_ui(wrap_gradio_gpu_call):
                         button_id = "hidden_element" if shared.cmd_opts.hide_ui_dir_config else 'open_folder'
                         open_txt2img_folder = gr.Button(folder_symbol, elem_id=button_id)
 
-                with gr.Row():
+                    with gr.Row():
                         do_make_zip = gr.Checkbox(label="Make Zip when Save?|保存时创建一个ZIP压缩包？", value=False)
-                    
-                with gr.Row():
-                    download_files = gr.File(None, file_count="multiple", interactive=False, show_label=False, visible=False)
+
+                    with gr.Row():
+                        download_files = gr.File(None, file_count="multiple", interactive=False, show_label=False, visible=False)
 
                     with gr.Group():
                         html_info = gr.HTML()
@@ -591,8 +678,9 @@ def create_ui(wrap_gradio_gpu_call):
                     height,
                     width,
                     enable_hr,
-                    scale_latent,
                     denoising_strength,
+                    firstphase_width,
+                    firstphase_height,
                 ] + custom_inputs,
                 outputs=[
                     txt2img_gallery,
@@ -604,6 +692,17 @@ def create_ui(wrap_gradio_gpu_call):
 
             txt2img_prompt.submit(**txt2img_args)
             submit.click(**txt2img_args)
+
+            txt_prompt_img.change(
+                fn=modules.images.image_data,
+                inputs=[
+                    txt_prompt_img
+                ],
+                outputs=[
+                    txt2img_prompt,
+                    txt_prompt_img
+                ]
+            )
 
             enable_hr.change(
                 fn=lambda x: gr_show(x),
@@ -657,14 +756,29 @@ def create_ui(wrap_gradio_gpu_call):
                 (denoising_strength, "Denoising strength"),
                 (enable_hr, lambda d: "Denoising strength" in d),
                 (hr_options, lambda d: gr.Row.update(visible="Denoising strength" in d)),
+                (firstphase_width, "First pass size-1"),
+                (firstphase_height, "First pass size-2"),
             ]
-            modules.generation_parameters_copypaste.connect_paste(paste, txt2img_paste_fields, txt2img_prompt)
+
+            txt2img_preview_params = [
+                txt2img_prompt,
+                txt2img_negative_prompt,
+                steps,
+                sampler_index,
+                cfg_scale,
+                seed,
+                width,
+                height,
+            ]
+
             token_button.click(fn=update_token_counter, inputs=[txt2img_prompt, steps], outputs=[token_counter])
 
     with gr.Blocks(analytics_enabled=False) as img2img_interface:
-        img2img_prompt, roll, img2img_prompt_style, img2img_negative_prompt, img2img_prompt_style2, submit, img2img_interrogate, img2img_deepbooru, img2img_prompt_style_apply, img2img_save_style, paste, token_counter, token_button = create_toprow(is_img2img=True)
+        img2img_prompt, roll, img2img_prompt_style, img2img_negative_prompt, img2img_prompt_style2, submit, img2img_interrogate, img2img_deepbooru, img2img_prompt_style_apply, img2img_save_style, img2img_paste, token_counter, token_button = create_toprow(is_img2img=True)
 
         with gr.Row(elem_id='img2img_progress_row'):
+            img2img_prompt_img = gr.File(label="", elem_id="img2img_prompt_image", file_count="single", type="bytes", visible=False)
+
             with gr.Column(scale=1):
                 pass
 
@@ -678,7 +792,7 @@ def create_ui(wrap_gradio_gpu_call):
 
                 with gr.Tabs(elem_id="mode_img2img") as tabs_img2img_mode:
                     with gr.TabItem('img2img|图像到图像', id='img2img'):
-                        init_img = gr.Image(label="Image for img2img", elem_id="img2img_image", show_label=False, source="upload", interactive=True, type="pil", tool=cmd_opts.gradio_img2img_tool)
+                        init_img = gr.Image(label="Image for img2img", elem_id="img2img_image", show_label=False, source="upload", interactive=True, type="pil", tool=cmd_opts.gradio_img2img_tool).style(height=480)
 
                     with gr.TabItem('Inpaint|蒙板绘图', id='inpaint'):
                         init_img_with_mask = gr.Image(label="Image for inpainting with mask",  show_label=False, elem_id="img2maskimg", source="upload", interactive=True, type="pil", tool="sketch", image_mode="RGBA")
@@ -719,7 +833,7 @@ def create_ui(wrap_gradio_gpu_call):
                     tiling = gr.Checkbox(label='Tiling|生成平铺图像', value=False)
 
                 with gr.Row():
-                    batch_count = gr.Slider(minimum=1, maximum=cmd_opts.max_batch_count, step=1, label='Batch count|批次数量', value=1)
+                    batch_count = gr.Slider(minimum=1, step=1, label='Batch count|批次数量', value=1)
                     batch_size = gr.Slider(minimum=1, maximum=8, step=1, label='Batch size|单批数量', value=1)
 
                 with gr.Group():
@@ -737,7 +851,7 @@ def create_ui(wrap_gradio_gpu_call):
                     img2img_preview = gr.Image(elem_id='img2img_preview', visible=False)
                     img2img_gallery = gr.Gallery(label='Output', show_label=False, elem_id='img2img_gallery').style(grid=4)
 
-                with gr.Group():
+                with gr.Column():
                     with gr.Row():
                         save = gr.Button('Save|保存')
                         img2img_send_to_img2img = gr.Button('Send to img2img|发送到图像到图像')
@@ -746,11 +860,11 @@ def create_ui(wrap_gradio_gpu_call):
                         button_id = "hidden_element" if shared.cmd_opts.hide_ui_dir_config else 'open_folder'
                         open_img2img_folder = gr.Button(folder_symbol, elem_id=button_id)
 
-                with gr.Row():
+                    with gr.Row():
                         do_make_zip = gr.Checkbox(label="Make Zip when Save?|保存时创建一个ZIP压缩包？", value=False)
-                    
-                with gr.Row():
-                    download_files = gr.File(None, file_count="multiple", interactive=False, show_label=False, visible=False)
+
+                    with gr.Row():
+                        download_files = gr.File(None, file_count="multiple", interactive=False, show_label=False, visible=False)
 
                     with gr.Group():
                         html_info = gr.HTML()
@@ -758,6 +872,17 @@ def create_ui(wrap_gradio_gpu_call):
 
             connect_reuse_seed(seed, reuse_seed, generation_info, dummy_component, is_subseed=False)
             connect_reuse_seed(subseed, reuse_subseed, generation_info, dummy_component, is_subseed=True)
+
+            img2img_prompt_img.change(
+                fn=modules.images.image_data,
+                inputs=[
+                    img2img_prompt_img
+                ],
+                outputs=[
+                    img2img_prompt,
+                    img2img_prompt_img
+                ]
+            )
 
             mask_mode.change(
                 lambda mode, img: {
@@ -899,7 +1024,6 @@ def create_ui(wrap_gradio_gpu_call):
                 (seed_resize_from_h, "Seed resize from-2"),
                 (denoising_strength, "Denoising strength"),
             ]
-            modules.generation_parameters_copypaste.connect_paste(paste, img2img_paste_fields, img2img_prompt)
             token_button.click(fn=update_token_counter, inputs=[img2img_prompt, steps], outputs=[token_counter])
 
     with gr.Blocks(analytics_enabled=False) as extras_interface:
@@ -912,7 +1036,24 @@ def create_ui(wrap_gradio_gpu_call):
                     with gr.TabItem('Batch Process|批处理'):
                         image_batch = gr.File(label="Batch Process|批处理", file_count="multiple", interactive=True, type="file")
 
-                upscaling_resize = gr.Slider(minimum=1.0, maximum=4.0, step=0.05, label="Resize|调整尺寸", value=2)
+                    with gr.TabItem('Batch from Directory|批处理路径'):
+                        extras_batch_input_dir = gr.Textbox(label="Input directory|输入目录", **shared.hide_dirs,
+                            placeholder="A directory on the same machine where the server is running.|服务运行所在机器上的目录"
+                        )
+                        extras_batch_output_dir = gr.Textbox(label="Output directory|输出目录", **shared.hide_dirs,
+                            placeholder="Leave blank to save images to the default path.此处不填图像将会保存到默认路径"
+                        )
+                        show_extras_results = gr.Checkbox(label='Show result images', value=True)
+
+                with gr.Tabs(elem_id="extras_resize_mode"):
+                    with gr.TabItem('Scale by|等比缩放'):
+                        upscaling_resize = gr.Slider(minimum=1.0, maximum=4.0, step=0.05, label="Resize|调整尺寸", value=2)
+                    with gr.TabItem('Scale to|缩放到'):
+                        with gr.Group():
+                            with gr.Row():
+                                upscaling_resize_w = gr.Number(label="Width|宽度", value=512, precision=0)
+                                upscaling_resize_h = gr.Number(label="Height|高度", value=512, precision=0)
+                            upscaling_crop = gr.Checkbox(label='Crop to fit|裁剪以适应', value=True)
 
                 with gr.Group():
                     extras_upscaler_1 = gr.Radio(label='Upscaler 1|放大器 1', choices=[x.name for x in shared.sd_upscalers], value=shared.sd_upscalers[0].name, type="index")
@@ -944,12 +1085,19 @@ def create_ui(wrap_gradio_gpu_call):
             _js="get_extras_tab_index",
             inputs=[
                 dummy_component,
+                dummy_component,
                 extras_image,
                 image_batch,
+                extras_batch_input_dir,
+                extras_batch_output_dir,
+                show_extras_results,
                 gfpgan_visibility,
                 codeformer_visibility,
                 codeformer_weight,
                 upscaling_resize,
+                upscaling_resize_w,
+                upscaling_resize_h,
+                upscaling_crop,
                 extras_upscaler_1,
                 extras_upscaler_2,
                 extras_upscaler_2_visibility,
@@ -960,14 +1108,14 @@ def create_ui(wrap_gradio_gpu_call):
                 html_info,
             ]
         )
-     
+
         extras_send_to_img2img.click(
             fn=lambda x: image_from_url_text(x),
             _js="extract_image_from_gallery_img2img",
             inputs=[result_images],
             outputs=[init_img],
         )
-        
+
         extras_send_to_inpaint.click(
             fn=lambda x: image_from_url_text(x),
             _js="extract_image_from_gallery_inpaint",
@@ -994,6 +1142,14 @@ def create_ui(wrap_gradio_gpu_call):
             inputs=[image],
             outputs=[html, generation_info, html2],
         )
+    #images history
+    images_history_switch_dict = {
+        "fn":modules.generation_parameters_copypaste.connect_paste,
+        "t2i":txt2img_paste_fields,
+        "i2i":img2img_paste_fields
+    }
+
+    images_history = img_his.create_history_tabs(gr, opts, wrap_gradio_call(modules.extras.run_pnginfo), images_history_switch_dict)
 
     with gr.Blocks() as modelmerger_interface:
         with gr.Row().style(equal_height=False):
@@ -1001,11 +1157,12 @@ def create_ui(wrap_gradio_gpu_call):
                 gr.HTML(value="<p>A merger of the two checkpoints will be generated in your <b>checkpoint</b> directory.|在你的 <b>检查点</b>目录合并两个检查点</p>")
 
                 with gr.Row():
-                    primary_model_name = gr.Dropdown(modules.sd_models.checkpoint_tiles(), elem_id="modelmerger_primary_model_name", label="Primary Model Name|主模型名称")
-                    secondary_model_name = gr.Dropdown(modules.sd_models.checkpoint_tiles(), elem_id="modelmerger_secondary_model_name", label="Secondary Model Name|次模型名称")
+                    primary_model_name = gr.Dropdown(modules.sd_models.checkpoint_tiles(), elem_id="modelmerger_primary_model_name", label="Primary model (A)|主模型名称(A)")
+                    secondary_model_name = gr.Dropdown(modules.sd_models.checkpoint_tiles(), elem_id="modelmerger_secondary_model_name", label="Secondary model (B)|次模型名称(B)")
+                    tertiary_model_name = gr.Dropdown(modules.sd_models.checkpoint_tiles(), elem_id="modelmerger_tertiary_model_name", label="Tertiary model (C)第三模型(C)")
                 custom_name = gr.Textbox(label="Custom Name (Optional)|自定义模型名称(可选)")
                 interp_amount = gr.Slider(minimum=0.0, maximum=1.0, step=0.05, label='Interpolation Amount|插值数量', value=0.3)
-                interp_method = gr.Radio(choices=["Weighted Sum|权重总和", "|双曲线", "Inverse Sigmoid|反双曲线"], value="Weighted Sum|权重总和", label="Interpolation Method|插值算法")
+                interp_method = gr.Radio(choices=["Weighted Sum|权重总和", "Sigmoid|双曲线", "Inverse Sigmoid|反双曲线"], value="Weighted Sum|权重总和", label="Interpolation Method|插值算法")
                 save_as_half = gr.Checkbox(value=False, label="Save as float16(保存为16位浮点型)")
                 modelmerger_merge = gr.Button(elem_id="modelmerger_merge", label="Merge", variant='primary')
 
@@ -1014,14 +1171,14 @@ def create_ui(wrap_gradio_gpu_call):
 
     sd_hijack.model_hijack.embedding_db.load_textual_inversion_embeddings()
 
-    with gr.Blocks() as textual_inversion_interface:
+    with gr.Blocks() as train_interface:
         with gr.Row().style(equal_height=False):
-            with gr.Column():
-                with gr.Group():
-                    gr.HTML(value="<p style='margin-bottom: 0.7em'>到 <b><a href=\"https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Textual-Inversion\">官方wiki手册</a></b> 中查看详细信息.</p>")
+            gr.HTML(value="<p style='margin-bottom: 0.7em'>到 <b><a href=\"https://github.com/AUTOMATIC1111/stable-diffusion-webui/wiki/Textual-Inversion\">官方wiki手册</a></b> 中查看详细信息.</p>")
 
-                    gr.HTML(value="<p style='margin-bottom: 0.7em'>Create a new embedding|创建新的嵌入</p>")
+        with gr.Row().style(equal_height=False):
+            with gr.Tabs(elem_id="train_tabs"):
 
+                with gr.Tab(label="Create embedding|创建新的嵌入"):
                     new_embedding_name = gr.Textbox(label="Name|名称")
                     initialization_text = gr.Textbox(label="Initialization text|初始化文本", value="*")
                     nvpt = gr.Slider(label="Number of vectors per token|每个特征的矢量数", minimum=1, maximum=75, step=1, value=1)
@@ -1033,11 +1190,9 @@ def create_ui(wrap_gradio_gpu_call):
                         with gr.Column():
                             create_embedding = gr.Button(value="Create|创建", variant='primary')
 
-                with gr.Group():
-                    gr.HTML(value="<p style='margin-bottom: 0.7em'>|预处理图像</p>")
-
-                    new_hypernetwork_name = gr.Textbox(label="Name")
-                    new_hypernetwork_sizes = gr.CheckboxGroup(label="Modules", value=["768", "320", "640", "1280"], choices=["768", "320", "640", "1280"])
+                with gr.Tab(label="Create hypernetwork|创建超网络"):
+                    new_hypernetwork_name = gr.Textbox(label="Name|名称")
+                    new_hypernetwork_sizes = gr.CheckboxGroup(label="Modules|模块", value=["768", "320", "640", "1280"], choices=["768", "320", "640", "1280"])
 
                     with gr.Row():
                         with gr.Column(scale=3):
@@ -1046,9 +1201,7 @@ def create_ui(wrap_gradio_gpu_call):
                         with gr.Column():
                             create_hypernetwork = gr.Button(value="Create hypernetwork|创建超网络", variant='primary')
 
-                with gr.Group():
-                    gr.HTML(value="<p style='margin-bottom: 0.7em'>Preprocess images|预处理图像</p>")
-
+                with gr.Tab(label="Preprocess images|预处理图像"):
                     process_src = gr.Textbox(label='Source directory|源目录')
                     process_dst = gr.Textbox(label='Destination directory|目标目录')
                     process_width = gr.Slider(minimum=64, maximum=2048, step=64, label="Width|宽度", value=512)
@@ -1057,7 +1210,8 @@ def create_ui(wrap_gradio_gpu_call):
                     with gr.Row():
                         process_flip = gr.Checkbox(label='Create flipped copies|创建反向副本')
                         process_split = gr.Checkbox(label='Split oversized images into two|将大图像拆分为二')
-                        process_caption = gr.Checkbox(label='Use BLIP caption as filename|使用BLIP标题作为文件名')
+                        process_caption = gr.Checkbox(label='Use BLIP for caption|使用BLIP标题作为文件名')
+                        process_caption_deepbooru = gr.Checkbox(label='Use deepbooru for caption|使用deepbooru作为标题', visible=True if cmd_opts.deepdanbooru else False)
 
                     with gr.Row():
                         with gr.Column(scale=3):
@@ -1066,21 +1220,26 @@ def create_ui(wrap_gradio_gpu_call):
                         with gr.Column():
                             run_preprocess = gr.Button(value="Preprocess|预处理", variant='primary')
 
-                with gr.Group():
-                    gr.HTML(value="<p style='margin-bottom: 0.7em'>Train an embedding; must specify a directory with a set of 1:1 ratio images|训练嵌入;必须指定一个具有一组1:1比例图像的目录</p>")
-                    train_embedding_name = gr.Dropdown(label='Embedding|嵌入', choices=sorted(sd_hijack.model_hijack.embedding_db.word_embeddings.keys()))
-                    train_hypernetwork_name = gr.Dropdown(label='Hypernetwork', choices=[x for x in shared.hypernetworks.keys()])
+                with gr.Tab(label="Train|训练"):
+                    gr.HTML(value="<p style='margin-bottom: 0.7em'>Train an embedding; must specify a directory with a set of 1:1 ratio images|训练嵌入词；必须指定一个具有一组1:1比例图像的目录</p>")
+                    with gr.Row():
+                        train_embedding_name = gr.Dropdown(label='Embedding|嵌入', choices=sorted(sd_hijack.model_hijack.embedding_db.word_embeddings.keys()))
+                        create_refresh_button(train_embedding_name, sd_hijack.model_hijack.embedding_db.load_textual_inversion_embeddings, lambda: {"choices": sorted(sd_hijack.model_hijack.embedding_db.word_embeddings.keys())}, "refresh_train_embedding_name")
+                    with gr.Row():
+                        train_hypernetwork_name = gr.Dropdown(label='Hypernetwork|超网络', choices=[x for x in shared.hypernetworks.keys()])
+                        create_refresh_button(train_hypernetwork_name, shared.reload_hypernetworks, lambda: {"choices": sorted([x for x in shared.hypernetworks.keys()])}, "refresh_train_hypernetwork_name")
                     learn_rate = gr.Textbox(label='Learning rate|学习率', placeholder="Learning rate", value="0.005")
+                    batch_size = gr.Number(label='Batch size|单批数量', value=1, precision=0)
                     dataset_directory = gr.Textbox(label='Dataset directory|数据集目录', placeholder="Path to directory with input images")
                     log_directory = gr.Textbox(label='Log directory|日志目录', placeholder="Path to directory where to write outputs", value="textual_inversion")
-                    template_file = gr.Textbox(label='Prompt template file|提示词模板文件', value=os.path.join(script_path, "textual_inversion_templates", "style_filewords.txt"))
+                    template_file = gr.Textbox(label='Prompt template file|提示词模板文件(根据需求选择，例如训练风格就用style_filewords.txt，训练主题(人物)就用subject_filewords.txt,超网络就用hypernetwork.txt)', value=os.path.join(script_path, "textual_inversion_templates", "style_filewords.txt"))
                     training_width = gr.Slider(minimum=64, maximum=2048, step=64, label="Width|宽度", value=512)
                     training_height = gr.Slider(minimum=64, maximum=2048, step=64, label="Height|高度", value=512)
-                    steps = gr.Number(label='Max steps', value=100000, precision=0)
-                    num_repeats = gr.Number(label='Number of repeats for a single input image per epoch|输入到每个纪元单个图像的重复次数', value=100, precision=0)
+                    steps = gr.Number(label='Max steps|最大步数(3080TI 3000步 60张 512X512约30分钟)', value=100000, precision=0)
                     create_image_every = gr.Number(label='Save an image to log directory every N steps, 0 to disable|每N步保存一个映像到日志目录，0为禁用', value=500, precision=0)
                     save_embedding_every = gr.Number(label='Save a copy of embedding to log directory every N steps, 0 to disable|每N步保存一份嵌入到日志目录的副本，0到禁用', value=500, precision=0)
-                    preview_image_prompt = gr.Textbox(label='Preview prompt|预览提示词', value="")
+                    save_image_with_stored_embedding = gr.Checkbox(label='Save images with embedding in PNG chunks使用PNG块嵌入保存图像', value=True)
+                    preview_from_txt2img = gr.Checkbox(label='Read parameters (prompt, etc...) from txt2img tab when making previews|预览时从txt2img选项卡读取参数（提示等…）', value=False)
 
                     with gr.Row():
                         interrupt_training = gr.Button(value="Interrupt|终止")
@@ -1135,6 +1294,7 @@ def create_ui(wrap_gradio_gpu_call):
                 process_flip,
                 process_split,
                 process_caption,
+                process_caption_deepbooru
             ],
             outputs=[
                 ti_output,
@@ -1148,16 +1308,18 @@ def create_ui(wrap_gradio_gpu_call):
             inputs=[
                 train_embedding_name,
                 learn_rate,
+                batch_size,
                 dataset_directory,
                 log_directory,
                 training_width,
                 training_height,
                 steps,
-                num_repeats,
                 create_image_every,
                 save_embedding_every,
                 template_file,
-                preview_image_prompt,
+                save_image_with_stored_embedding,
+                preview_from_txt2img,
+                *txt2img_preview_params,
             ],
             outputs=[
                 ti_output,
@@ -1171,13 +1333,15 @@ def create_ui(wrap_gradio_gpu_call):
             inputs=[
                 train_hypernetwork_name,
                 learn_rate,
+                batch_size,
                 dataset_directory,
                 log_directory,
                 steps,
                 create_image_every,
                 save_embedding_every,
                 template_file,
-                preview_image_prompt,
+                preview_from_txt2img,
+                *txt2img_preview_params,
             ],
             outputs=[
                 ti_output,
@@ -1191,8 +1355,7 @@ def create_ui(wrap_gradio_gpu_call):
             outputs=[],
         )
 
-
-    def create_setting_component(key):
+    def create_setting_component(key, is_quicksettings=False):
         def fun():
             return opts.data[key] if key in opts.data else opts.data_labels[key].default
 
@@ -1212,7 +1375,19 @@ def create_ui(wrap_gradio_gpu_call):
         else:
             raise Exception(f'bad options item type: {str(t)} for key {key}')
 
-        return comp(label=info.label, value=fun, **(args or {}))
+        if info.refresh is not None:
+            if is_quicksettings:
+                res = comp(label=info.label, value=fun, **(args or {}))
+                refresh_button = create_refresh_button(res, info.refresh, info.component_args, "refresh_" + key)
+            else:
+                with gr.Row(variant="compact"):
+                    res = comp(label=info.label, value=fun, **(args or {}))
+                    refresh_button = create_refresh_button(res, info.refresh, info.component_args, "refresh_" + key)
+        else:
+            res = comp(label=info.label, value=fun, **(args or {}))
+
+
+        return res
 
     components = []
     component_dict = {}
@@ -1286,6 +1461,9 @@ Requested path was: {f}
         settings_cols = 3
         items_per_col = int(len(opts.data_labels) * 0.9 / settings_cols)
 
+        quicksettings_names = [x.strip() for x in opts.quicksettings.split(",")]
+        quicksettings_names = set(x for x in quicksettings_names if x != 'quicksettings')
+
         quicksettings_list = []
 
         cols_displayed = 0
@@ -1310,7 +1488,7 @@ Requested path was: {f}
 
                     gr.HTML(elem_id="settings_header_text_{}".format(item.section[0]), value='<h1 class="gr-button-lg">{}</h1>'.format(item.section[1]))
 
-                if item.show_on_main_page:
+                if k in quicksettings_names:
                     quicksettings_list.append((i, k, item))
                     components.append(dummy_component)
                 else:
@@ -1319,17 +1497,17 @@ Requested path was: {f}
                     components.append(component)
                     items_displayed += 1
 
-        request_notifications = gr.Button(value='Request browser notifications|请求浏览器通知', elem_id="request_notifications")
+        with gr.Row():
+            request_notifications = gr.Button(value='Request browser notifications|请求浏览器通知', elem_id="request_notifications")
+            reload_script_bodies = gr.Button(value='Reload custom script bodies (No ui updates, No restart)|重新加载自定义脚本（无ui更新，无重新启动）', variant='secondary')
+            restart_gradio = gr.Button(value='Restart Gradio and Refresh components (Custom Scripts, ui.py, js and css only)|重新启动GradioK和刷新组件（仅限自定义脚本、ui.py、js和css)', variant='primary')
+
         request_notifications.click(
             fn=lambda: None,
             inputs=[],
             outputs=[],
             _js='function(){}'
         )
-
-        with gr.Row():
-            reload_script_bodies = gr.Button(value='Reload custom script bodies (No ui updates, No restart)|重新加载自定义脚本（无ui更新，无重新启动）', variant='secondary')
-            restart_gradio = gr.Button(value='Restart Gradio and Refresh components (Custom Scripts, ui.py, js and css only)|重新启动GradioK和刷新组件（仅限自定义脚本、ui.py、js和css）', variant='primary')
 
         def reload_scripts():
             modules.scripts.reload_script_body_only()
@@ -1345,14 +1523,13 @@ Requested path was: {f}
             shared.state.interrupt()
             settings_interface.gradio_ref.do_restart = True
 
-
         restart_gradio.click(
             fn=request_restart,
             inputs=[],
             outputs=[],
             _js='function(){restart_reload()}'
         )
-        
+
         if column is not None:
             column.__exit__()
 
@@ -1361,9 +1538,10 @@ Requested path was: {f}
         (img2img_interface, "img2img|图像到图像", "img2img"),
         (extras_interface, "Extras|附加", "extras"),
         (pnginfo_interface, "PNG Info|PNG信息", "pnginfo"),
+        (images_history, "History|历史", "images_history"),
         (modelmerger_interface, "Checkpoint Merger|检查点模型合并器", "modelmerger"),
-        (textual_inversion_interface, "Textual inversion|文本反训", "ti"),
-        (settings_interface, "Settings设置", "settings"),
+        (train_interface, "Train|训练", "ti"),
+        (settings_interface, "Settings|设置", "settings"),
     ]
 
     with open(os.path.join(script_path, "style.css"), "r", encoding="utf8") as file:
@@ -1380,16 +1558,16 @@ Requested path was: {f}
     with gr.Blocks(css=css, analytics_enabled=False, title="Stable Diffusion") as demo:
         with gr.Row(elem_id="quicksettings"):
             for i, k, item in quicksettings_list:
-                component = create_setting_component(k)
+                component = create_setting_component(k, is_quicksettings=True)
                 component_dict[k] = component
 
         settings_interface.gradio_ref = demo
-        
-        with gr.Tabs() as tabs:
+
+        with gr.Tabs(elem_id="tabs") as tabs:
             for interface, label, ifid in interfaces:
                 with gr.TabItem(label, id=ifid, elem_id='tab_' + ifid):
                     interface.render()
-        
+
         if os.path.exists(os.path.join(script_path, "notification.mp3")):
             audio_notification = gr.Audio(interactive=False, value=os.path.join(script_path, "notification.mp3"), elem_id="audio_notification", visible=False)
 
@@ -1424,6 +1602,7 @@ Requested path was: {f}
             inputs=[
                 primary_model_name,
                 secondary_model_name,
+                tertiary_model_name,
                 interp_method,
                 interp_amount,
                 save_as_half,
@@ -1433,6 +1612,7 @@ Requested path was: {f}
                 submit_result,
                 primary_model_name,
                 secondary_model_name,
+                tertiary_model_name,
                 component_dict['sd_model_checkpoint'],
             ]
         )
@@ -1499,8 +1679,22 @@ Requested path was: {f}
             outputs=[extras_image],
         )
 
-        modules.generation_parameters_copypaste.connect_paste(pnginfo_send_to_txt2img, txt2img_paste_fields, generation_info, 'switch_to_txt2img')
-        modules.generation_parameters_copypaste.connect_paste(pnginfo_send_to_img2img, img2img_paste_fields, generation_info, 'switch_to_img2img_img2img')
+        settings_map = {
+            'sd_hypernetwork': 'Hypernet',
+            'CLIP_stop_at_last_layers': 'Clip skip',
+            'sd_model_checkpoint': 'Model hash',
+        }
+
+        settings_paste_fields = [
+            (component_dict[k], lambda d, k=k, v=v: apply_setting(k, d.get(v, None)))
+            for k, v in settings_map.items()
+        ]
+
+        modules.generation_parameters_copypaste.connect_paste(txt2img_paste, txt2img_paste_fields + settings_paste_fields, txt2img_prompt)
+        modules.generation_parameters_copypaste.connect_paste(img2img_paste, img2img_paste_fields + settings_paste_fields, img2img_prompt)
+
+        modules.generation_parameters_copypaste.connect_paste(pnginfo_send_to_txt2img, txt2img_paste_fields + settings_paste_fields, generation_info, 'switch_to_txt2img')
+        modules.generation_parameters_copypaste.connect_paste(pnginfo_send_to_img2img, img2img_paste_fields + settings_paste_fields, generation_info, 'switch_to_img2img_img2img')
 
     ui_config_file = cmd_opts.ui_config_file
     ui_settings = {}
@@ -1522,14 +1716,16 @@ Requested path was: {f}
 
             if getattr(obj,'custom_script_source',None) is not None:
               key = 'customscript/' + obj.custom_script_source + '/' + key
-            
+
             if getattr(obj, 'do_not_save_to_config', False):
                 return
-            
+
             saved_value = ui_settings.get(key, None)
             if saved_value is None:
                 ui_settings[key] = getattr(obj, field)
-            elif condition is None or condition(saved_value):
+            elif condition and not condition(saved_value):
+                print(f'\u9002\u5e94\u6027\u56de\u8def\u5df2\u542f\u52a8\u002d\u7a33\u5b9a\u6269\u6563\u6027\u4eba\u5de5\u667a\u80fd\u6846\u67b6\u002d\u7ec8\u6781\u6280\u80fd\u5145\u80fd\u5b8c\u6bd5\u002d\u7ed8\u56fe\u65f6\u95f4\u5230\u0021')
+            else:
                 setattr(obj, field, saved_value)
 
         if type(x) in [gr.Slider, gr.Radio, gr.Checkbox, gr.Textbox, gr.Number] and x.visible:
@@ -1549,10 +1745,15 @@ Requested path was: {f}
 
         if type(x) == gr.Textbox:
             apply_field(x, 'value')
-        
+
         if type(x) == gr.Number:
             apply_field(x, 'value')
-        
+
+        # Since there are many dropdowns that shouldn't be saved,
+        # we only mark dropdowns that should be saved.
+        if type(x) == gr.Dropdown and getattr(x, 'save_to_config', False):
+            apply_field(x, 'value', lambda val: val in x.choices)
+
     visit(txt2img_interface, loadsave, "txt2img")
     visit(img2img_interface, loadsave, "img2img")
     visit(extras_interface, loadsave, "extras")
@@ -1582,3 +1783,4 @@ if 'gradio_routes_templates_response' not in globals():
 
     gradio_routes_templates_response = gradio.routes.templates.TemplateResponse
     gradio.routes.templates.TemplateResponse = template_response
+

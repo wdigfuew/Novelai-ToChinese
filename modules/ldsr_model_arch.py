@@ -18,7 +18,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # Create LDSR Class
 class LDSR:
     def load_model_from_config(self, half_attention):
-        print(f"Loading model from {self.modelPath}")
+        print(f"从 {self.modelPath}载入模型")
         pl_sd = torch.load(self.modelPath, map_location="cpu")
         sd = pl_sd["state_dict"]
         config = OmegaConf.load(self.yamlPath)
@@ -109,7 +109,7 @@ class LDSR:
                 f'Downsampling from [{width_og}, {height_og}] to [{width_downsampled_pre}, {height_downsampled_pre}]')
             im_og = im_og.resize((width_downsampled_pre, height_downsampled_pre), Image.LANCZOS)
         else:
-            print(f"Down sample rate is 1 from {target_scale} / 4 (Not downsampling)")
+            print(f"低采样率是 {target_scale} 中的1/ 4 (无法将低采样)")
         logs = self.run(model["model"], im_og, diffusion_steps, eta)
 
         sample = logs["sample"]
@@ -152,7 +152,7 @@ def convsample_ddim(model, cond, steps, shape, eta=1.0, callback=None, normals_s
     ddim = DDIMSampler(model)
     bs = shape[0]
     shape = shape[1:]
-    print(f"Sampling with eta = {eta}; steps: {steps}")
+    print(f"eta采样 = {eta}; 步数: {steps}")
     samples, intermediates = ddim.sample(steps, batch_size=bs, shape=shape, conditioning=cond, callback=callback,
                                          normals_sequence=normals_sequence, quantize_x0=quantize_x0, eta=eta,
                                          mask=mask, x0=x0, temperature=temperature, verbose=False,
@@ -175,7 +175,7 @@ def make_convolutional_sample(batch, model, custom_steps=None, eta=1.0, quantize
 
     if custom_shape is not None:
         z = torch.randn(custom_shape)
-        print(f"Generating {custom_shape[0]} samples of shape {custom_shape[1:]}")
+        print(f"从 {custom_shape[1:]}中创建{custom_shape[0]} 采样 ")
 
     z0 = None
 

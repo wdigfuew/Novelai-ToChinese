@@ -1,4 +1,4 @@
-import glob
+import collections
 import os.path
 import sys
 from collections import namedtuple
@@ -15,6 +15,8 @@ model_path = os.path.abspath(os.path.join(models_path, model_dir))
 
 CheckpointInfo = namedtuple("CheckpointInfo", ['filename', 'title', 'hash', 'model_name', 'config'])
 checkpoints_list = {}
+checkpoints_loaded = collections.OrderedDict()
+print(f"\u7ffb\u8bd1\u548c\u9002\u5e94\u6027\u4f18\u5316\u7a0b\u5f0f\u6b63\u5728\u521d\u59cb\u5316\u002e\u002e")
 
 try:
     # this silences the annoying "Some weights of the model checkpoint were not used when initializing..." message at start.
@@ -65,7 +67,7 @@ def list_models():
         checkpoints_list[title] = CheckpointInfo(cmd_ckpt, title, h, short_model_name, shared.cmd_opts.config)
         shared.opts.data['sd_model_checkpoint'] = title
     elif cmd_ckpt is not None and cmd_ckpt != shared.default_sd_model_file:
-        print(f"Checkpoint in --ckpt argument not found (Possible it was moved to {model_path}: {cmd_ckpt}", file=sys.stderr)
+        print(f"Checkpoint in --ckpt argument not found|无法找到--ckpt参数中的检查点(可能已将其移至 {model_path}: {cmd_ckpt}", file=sys.stderr)
     for filename in model_list:
         h = model_hash(filename)
         title, short_model_name = modeltitle(filename, h)
@@ -105,18 +107,18 @@ def select_checkpoint():
         return checkpoint_info
 
     if len(checkpoints_list) == 0:
-        print(f"No checkpoints found. When searching for checkpoints, looked at:", file=sys.stderr)
+        print(f"No checkpoints found. When searching for checkpoints, looked at|无法找到检查点.搜索检查点时，请查看:", file=sys.stderr)
         if shared.cmd_opts.ckpt is not None:
-            print(f" - file {os.path.abspath(shared.cmd_opts.ckpt)}", file=sys.stderr)
+            print(f" - file|文件 {os.path.abspath(shared.cmd_opts.ckpt)}", file=sys.stderr)
         print(f" - directory {model_path}", file=sys.stderr)
         if shared.cmd_opts.ckpt_dir is not None:
-            print(f" - directory {os.path.abspath(shared.cmd_opts.ckpt_dir)}", file=sys.stderr)
-        print(f"Can't run without a checkpoint. Find and place a .ckpt file into any of those locations. The program will exit.", file=sys.stderr)
+            print(f" - directory|目录 {os.path.abspath(shared.cmd_opts.ckpt_dir)}", file=sys.stderr)
+        print(f"Can't run without a checkpoint. Find and place a .ckpt file into any of those locations. The program will exit.|没有检查点无法运行。在这些位置中查找并放置.ckpt文件.程序将退出.", file=sys.stderr)
         exit(1)
 
     checkpoint_info = next(iter(checkpoints_list.values()))
     if model_checkpoint is not None:
-        print(f"Checkpoint {model_checkpoint} not found; loading fallback {checkpoint_info.title}", file=sys.stderr)
+        print(f"Checkpoint {model_checkpoint} not found|该检查点文件无法找到; loading fallback |加载将回退{checkpoint_info.title}", file=sys.stderr)
 
     return checkpoint_info
 
@@ -132,38 +134,45 @@ def load_model_weights(model, checkpoint_info):
     checkpoint_file = checkpoint_info.filename
     sd_model_hash = checkpoint_info.hash
 
-    print(f"Loading weights [{sd_model_hash}] from {checkpoint_file}")
+    if checkpoint_info not in checkpoints_loaded:
+        print(f" 从 {checkpoint_file}载入权重 [{sd_model_hash}]")
 
-    pl_sd = torch.load(checkpoint_file, map_location="cpu")
-    if "global_step" in pl_sd:
-        print(f"Global Step: {pl_sd['global_step']}")
+        pl_sd = torch.load(checkpoint_file, map_location=shared.weight_load_location)
+        if "global_step" in pl_sd:
+            print(f"Global Step|全局步数: {pl_sd['global_step']}")
 
-    sd = get_state_dict_from_checkpoint(pl_sd)
+        sd = get_state_dict_from_checkpoint(pl_sd)
+        model.load_state_dict(sd, strict=False)
 
-    model.load_state_dict(sd, strict=False)
+        if shared.cmd_opts.opt_channelslast:
+            model.to(memory_format=torch.channels_last)
 
-    if shared.cmd_opts.opt_channelslast:
-        model.to(memory_format=torch.channels_last)
+        if not shared.cmd_opts.no_half:
+            model.half()
 
-    if not shared.cmd_opts.no_half:
-        model.half()
+        devices.dtype = torch.float32 if shared.cmd_opts.no_half else torch.float16
+        devices.dtype_vae = torch.float32 if shared.cmd_opts.no_half or shared.cmd_opts.no_half_vae else torch.float16
 
-    devices.dtype = torch.float32 if shared.cmd_opts.no_half else torch.float16
-    devices.dtype_vae = torch.float32 if shared.cmd_opts.no_half or shared.cmd_opts.no_half_vae else torch.float16
+        vae_file = os.path.splitext(checkpoint_file)[0] + ".vae.pt"
 
-    vae_file = os.path.splitext(checkpoint_file)[0] + ".vae.pt"
+        if not os.path.exists(vae_file) and shared.cmd_opts.vae_path is not None:
+            vae_file = shared.cmd_opts.vae_path
 
-    if not os.path.exists(vae_file) and shared.cmd_opts.vae_path is not None:
-        vae_file = shared.cmd_opts.vae_path
+        if os.path.exists(vae_file):
+            print(f"Loading VAE weights from|从XX载入VAE权重: {vae_file}")
+            vae_ckpt = torch.load(vae_file, map_location=shared.weight_load_location)
+            vae_dict = {k: v for k, v in vae_ckpt["state_dict"].items() if k[0:4] != "loss"}
+            model.first_stage_model.load_state_dict(vae_dict)
 
-    if os.path.exists(vae_file):
-        print(f"Loading VAE weights from: {vae_file}")
-        vae_ckpt = torch.load(vae_file, map_location="cpu")
-        vae_dict = {k: v for k, v in vae_ckpt["state_dict"].items() if k[0:4] != "loss"}
+        model.first_stage_model.to(devices.dtype_vae)
 
-        model.first_stage_model.load_state_dict(vae_dict)
-
-    model.first_stage_model.to(devices.dtype_vae)
+        checkpoints_loaded[checkpoint_info] = model.state_dict().copy()
+        while len(checkpoints_loaded) > shared.opts.sd_checkpoint_cache:
+            checkpoints_loaded.popitem(last=False)  # LRU
+    else:
+        print(f"Loading weights [{sd_model_hash}] from cache|从载入XX权重")
+        checkpoints_loaded.move_to_end(checkpoint_info)
+        model.load_state_dict(checkpoints_loaded[checkpoint_info])
 
     model.sd_model_hash = sd_model_hash
     model.sd_model_checkpoint = checkpoint_file
@@ -175,7 +184,7 @@ def load_model():
     checkpoint_info = select_checkpoint()
 
     if checkpoint_info.config != shared.cmd_opts.config:
-        print(f"Loading config from: {checkpoint_info.config}")
+        print(f"Loading config from|从XX载入配置: {checkpoint_info.config}")
 
     sd_config = OmegaConf.load(checkpoint_info.config)
     sd_model = instantiate_from_config(sd_config.model)
@@ -190,7 +199,8 @@ def load_model():
 
     sd_model.eval()
 
-    print(f"Model loaded.")
+    print(f"Model loaded.|模型已载入")
+    print(f"\u5c31\u7eea\u0028\u6ca1\u6709\u53d1\u73b0\u4ec0\u4e48\u95ee\u9898\u0029\u002c\u5728\u6d4f\u89c8\u5668\u8f93\u5165\u5730\u5740\u5c31\u53ef\u4ee5\u4f7f\u7528\u5566\u007e")
     return sd_model
 
 
@@ -202,6 +212,7 @@ def reload_model_weights(sd_model, info=None):
         return
 
     if sd_model.sd_checkpoint_info.config != checkpoint_info.config:
+        checkpoints_loaded.clear()
         shared.sd_model = load_model()
         return shared.sd_model
 
@@ -219,5 +230,5 @@ def reload_model_weights(sd_model, info=None):
     if not shared.cmd_opts.lowvram and not shared.cmd_opts.medvram:
         sd_model.to(devices.device)
 
-    print(f"Weights loaded.")
+    print(f"Weights loaded.权重已载入")
     return sd_model

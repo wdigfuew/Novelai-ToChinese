@@ -27,10 +27,10 @@ class UpscalerLDSR(Upscaler):
         if os.path.exists(yaml_path):
             statinfo = os.stat(yaml_path)
             if statinfo.st_size >= 10485760:
-                print("Removing invalid LDSR YAML file.")
+                print("Removing invalid LDSR YAML file.|正在删除无效的LDSR YAML文件。")
                 os.remove(yaml_path)
         if os.path.exists(old_model_path):
-            print("Renaming model from model.pth to model.ckpt")
+            print("重命名模型从model.pth到model.ckpt")
             os.rename(old_model_path, new_model_path)
         model = load_file_from_url(url=self.model_url, model_dir=self.model_path,
                                    file_name="model.ckpt", progress=True)
@@ -41,14 +41,14 @@ class UpscalerLDSR(Upscaler):
             return LDSR(model, yaml)
 
         except Exception:
-            print("Error importing LDSR:", file=sys.stderr)
+            print("Error importing LDSR|导入LDS时出错:", file=sys.stderr)
             print(traceback.format_exc(), file=sys.stderr)
         return None
 
     def do_upscale(self, img, path):
         ldsr = self.load_model(path)
         if ldsr is None:
-            print("NO LDSR!")
+            print("NO LDSR!|无LDSR!")
             return img
         ddim_steps = shared.opts.ldsr_steps
         return ldsr.super_resolution(img, ddim_steps, self.scale)

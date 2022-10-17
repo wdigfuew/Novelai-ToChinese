@@ -6,7 +6,6 @@ titles = {
 	"GFPGAN": "使用GFPGAN来修复低分辨率人脸",
 	"Euler a": "Euler Ancestral(欧拉始祖)-非常有创意的模型，根据采样步数，每个人都可以得到完全不同的图片，将采样步数设置为高于30-40没有帮助",
 	"DDIM": "降噪扩散隐式模型-最擅长修复",
-
 	"Batch count|批次数量": "要创建多少个批次图像（最终图像数=批次数量*单批数量）",
 	"Batch size|单批数量": "单批中要创建多少图像（最终图像数=批次数量*单批数量）",
     "CFG Scale|分类自由引导系数": "分类自由引导系数-图像与提示词的一致程度-较低的值会产生更具创造性的结果",
@@ -16,6 +15,8 @@ titles = {
     "\u{1f3a8}": "添加一个随机艺术家名字到提示词",
     "\u2199\ufe0f": "从提示词获取生成参数(作者挨打不写说明，测了半小时..咳咳，功能是这样，生成了图片下面由三行参数，第一行是提示词，第二行是参数，第三行是花费时间，所以你可以把第二行参数复制到提示词那里，它会自动帮助你设置成那些参数...)",
     "\u{1f4c2}": "打开输出文件夹",
+    "\u{1f4be}": "保存风格",
+    "\u{1f4cb}": "将选定风格应用到提示词(含否定)",
 
     "Inpaint a part of image": "Draw a mask over an image, and the script will regenerate the masked area with content according to prompt",
     "SD upscale": "Upscale image normally, split result into tiles, improve each tile using img2img, merge whole image back",
@@ -58,29 +59,37 @@ titles = {
     "Resize seed from height|高度调整随机种": "尝试生成与使用相同随机种以指定分辨率生成的图片类似的图片",
     "Resize seed from width|宽度调整随机种": "尝试生成与使用相同随机种以指定分辨率生成的图片类似的图片",
 
-    "Interrogate": "Reconstruct prompt from existing image and put it into the prompt field.",
+    "Interrogate": "Reconstruct prompt from existing image and put it into the prompt field.|从现有图像重建提示并将其放入提示字段。",
 
-    "Images filename pattern": "Use following tags to define how filenames for images are chosen: [steps], [cfg], [prompt], [prompt_no_styles], [prompt_spaces], [width], [height], [styles], [sampler], [seed], [model_hash], [prompt_words], [date], [datetime], [job_timestamp]; leave empty for default.",
-    "Directory name pattern": "Use following tags to define how subdirectories for images and grids are chosen: [steps], [cfg], [prompt], [prompt_no_styles], [prompt_spaces], [width], [height], [styles], [sampler], [seed], [model_hash], [prompt_words], [date], [datetime], [job_timestamp]; leave empty for default.",
-    "Max prompt words": "Set the maximum number of words to be used in the [prompt_words] option; ATTENTION: If the words are too long, they may exceed the maximum length of the file path that the system can handle",
+    "Images filename pattern|图像文件名样式": "使用以下标记来定义如何选择图像的文件名(注意,输入格式为[类型1],[类型2]，中文的是翻译不要输进去)：[steps]采样步数、[cfg]CFG系数,[prompt]提示词空格换为下划线和逗号,[prompt_no_styles]提示词含空格和逗号,[prompt_spaces]提示词空格,[width]宽度,[height]高度,[styles]风格,[sampler]采样器,[seed]随机种,[model_hash]模型哈希值,[prompt_words]提示词语句,[date]保存时日期,[datetime]保存时日期时间,[job_timestamp]处理完成时日期时间；默认设置为空。",
+    "Directory name pattern|目录名称模式": "图像文件名样式": "使用以下标记来定义如何选择图像的文件名(注意,输入格式为[类型1],[类型2]，中文的是翻译不要输进去)：[steps]采样步数、[cfg]CFG系数,[prompt]提示词空格换为下划线和逗号,[prompt_no_styles]提示词含空格和逗号,[prompt_spaces]提示词空格,[width]宽度,[height]高度,[styles]风格,[sampler]采样器,[seed]随机种,[model_hash]模型哈希值,[prompt_words]提示词语句,[date]保存时日期,[datetime]保存时日期时间,[job_timestamp]处理完成时日期时间；默认设置为空。",
+    "Max prompt words|最大提示词": "设置要在[prompt_words]选项中使用的最大字数；注意：如果单词太长，可能会超过系统可以处理的文件路径的最大长度",
 
     "Loopback": "Process an image, use it as an input, repeat.",
     "Loops": "How many times to repeat processing an image and using it as input for the next iteration",
 
-    "Style 1": "Style to apply; styles have components for both positive and negative prompts and apply to both",
-    "Style 2": "Style to apply; styles have components for both positive and negative prompts and apply to both",
+    "Style 1|风格1": "要应用的样式；样式具有用于正面和负面提示的组件，并应用于两者",
+    "Style 2|风格2": "要应用的样式；样式具有用于正面和负面提示的组件，并应用于两者",
     "Apply style|应用风格": "插入所选风格到提示词区",
     "Create style|创建风格": "保存当前提示词作为一个风格，如果你添加{prompt}标记到文本中，则该样式将在你应用风格时被添加到提示词区",
 
-    "Checkpoint name": "Loads weights from checkpoint before making images. You can either use hash or a part of filename (as seen in settings) for checkpoint name. Recommended to use with Y axis for less switching.",
+    "Checkpoint name|检查点名称": "在制作图像之前，从检查点加载权重。您可以使用哈希或文件名的一部分（如设置中所示）作为检查点名称。建议与Y轴一起使用，以减少切换。",
 
-    "vram": "Torch active: Peak amount of VRAM used by Torch during generation, excluding cached data.\nTorch reserved: Peak amount of VRAM allocated by Torch, including all active and cached data.\nSys VRAM: Peak amount of VRAM allocation across all applications / total GPU VRAM (peak utilization%).",
+    "vram": "Torch活动时：生成期间Torch使用的VRAM峰值，不包括缓存数据。\nTorch保留：高峰分配的VRAM峰值，包括所有活动数据和缓存数据。\n系统VRAM显存：所有应用程序的VRAM分配峰值/GPU VRAM总量（峰值利用率%）.",
 
-    "Highres. fix|高分辨率修正": "默认分两步生成：1创建不完整低分辨率图像 2在不改变构图的情况下放大并改进其中的细节",
+    "Highres. fix|高分辨率修正": "默认分两步生成：1创建不完整低分辨率图像 2在不改变构图的情况下放大并改进其中的细节(注意，你可以决定初始低分辨率图像的尺寸)",
     "Scale latent|潜在空间放大": "1创建完整低分辨率图像 2放大并改善细节(XX论坛:开启和关闭的主要区别在于第一步创建的低分辨率图像是否完整)",
 
     "Eta noise seed delta|Eta德尔塔噪波随机种": "如果该值为非零值，则将其添加到随机种中，并用于在使用Eta采样器时初始化RNG以获取噪波。您可以使用它生成更多的图像变体，或者如果您知道自己在做什么，也可以使用它来匹配其他软件的图像。",
     "Do not add watermark to images|不向图像添加水印": "如果启用此选项，则不会将水印添加到创建的图像。警告：如果不添加水印，可能会以不道德的方式进行攻击。",
+
+    "Filename word regex|文件名词条正则": "此正则表达式将用于从文件名中提取单词，并使用下面的选项将它们连接到用于训练的标签文本中。留空以保持文件名文本不变。",
+    "Filename join string|文件名加入字符串": "如果启用上述选项，则此字符串将用于将拆分的单词连接到一行中。",
+
+    "Quicksettings list": "设置名称列表，以逗号分隔，用于应该转到顶部快速访问栏而不是通常的设置选项卡的设置。有关设置名称，请参阅modules/shared.py。需要重新启动才能应用.",
+
+    "Weighted sum": "返回值 = A * (1 - M) + B * M",
+    "Add difference": "返回值 = A + (B - C) * M",
 }
 
 

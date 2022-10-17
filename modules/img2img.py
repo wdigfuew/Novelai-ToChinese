@@ -21,7 +21,7 @@ def process_batch(p, input_dir, output_dir, args):
 
     images = [file for file in [os.path.join(input_dir, x) for x in os.listdir(input_dir)] if os.path.isfile(file)]
 
-    print(f"Will process {len(images)} images, creating {p.n_iter * p.batch_size} new images for each.")
+    print(f"将处理 {len(images)} 图像, 为每个图像创建 {p.n_iter * p.batch_size} 的新图像.")
 
     save_normally = output_dir == ''
 
@@ -110,7 +110,7 @@ def img2img(mode: int, prompt: str, negative_prompt: str, prompt_style: str, pro
     )
 
     if shared.cmd_opts.enable_console_prompts:
-        print(f"\nimg2img: {prompt}", file=shared.progress_print_out)
+        print(f"\nimg2img图像到图像: {prompt}", file=shared.progress_print_out)
 
     p.extra_generation_params["Mask blur"] = mask_blur
 

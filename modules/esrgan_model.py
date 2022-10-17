@@ -106,7 +106,7 @@ class UpscalerESRGAN(Upscaler):
         else:
             filename = path
         if not os.path.exists(filename) or filename is None:
-            print("Unable to load %s from %s" % (self.model_path, filename))
+            print("无法将 %s 从 %s加载" % (self.model_path, filename))
             return None
 
         pretrained_net = torch.load(filename, map_location='cpu' if devices.device_esrgan.type == 'mps' else None)

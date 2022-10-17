@@ -5,10 +5,10 @@ let arFrameTimeout = setTimeout(function(){},0);
 
 function dimensionChange(e,dimname){
 
-	if(dimname == 'Width'){
+	if(dimname == 'Width|宽度'){
 		currentWidth = e.target.value*1.0
 	}
-	if(dimname == 'Height'){
+	if(dimname == 'Height|高度'){
 		currentHeight = e.target.value*1.0
 	}
 
@@ -30,9 +30,9 @@ function dimensionChange(e,dimname){
 
 	var targetElement = null;
 
-	if(img2imgMode=='img2img' && redrawImage){
+	if(img2imgMode=='img2img|图像到图像' && redrawImage){
 		targetElement = redrawImage;
-	}else if(img2imgMode=='Inpaint' && inpaintImage){
+	}else if(img2imgMode=='Inpaint|蒙板绘图' && inpaintImage){
 		targetElement = inpaintImage;
 	}
 
@@ -102,14 +102,14 @@ onUiUpdate(function(){
 			let parentLabel = e.parentElement.querySelector('label')
 			if(parentLabel && parentLabel.innerText){
 				if(!e.classList.contains('scrollwatch')){
-					if(parentLabel.innerText == 'Width' || parentLabel.innerText == 'Height'){
+					if(parentLabel.innerText == 'Width|宽度' || parentLabel.innerText == 'Height|高度'){
 						e.addEventListener('input', function(e){dimensionChange(e,parentLabel.innerText)} )
 						e.classList.add('scrollwatch')
 					}
-					if(parentLabel.innerText == 'Width'){
+					if(parentLabel.innerText == 'Width|宽度'){
 						currentWidth = e.value*1.0
 					}
-					if(parentLabel.innerText == 'Height'){
+					if(parentLabel.innerText == 'Height|高度'){
 						currentHeight = e.value*1.0
 					}
 				}

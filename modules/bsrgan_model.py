@@ -33,7 +33,7 @@ class UpscalerBSRGAN(modules.upscaler.Upscaler):
                 scaler_data = modules.upscaler.UpscalerData(name, file, self, 4)
                 scalers.append(scaler_data)
             except Exception:
-                print(f"Error loading BSRGAN model: {file}", file=sys.stderr)
+                print(f"Error loading BSRGAN model|加载BSRGAN模型时出错: {file}", file=sys.stderr)
                 print(traceback.format_exc(), file=sys.stderr)
         self.scalers = scalers
 
@@ -65,7 +65,7 @@ class UpscalerBSRGAN(modules.upscaler.Upscaler):
         else:
             filename = path
         if not os.path.exists(filename) or filename is None:
-            print(f"BSRGAN: Unable to load model from {filename}", file=sys.stderr)
+            print(f"BSRGAN:无法从{filename}中加载模型", file=sys.stderr)
             return None
         model = RRDBNet(in_nc=3, out_nc=3, nf=64, nb=23, gc=32, sf=4)  # define network
         model.load_state_dict(torch.load(filename), strict=True)

@@ -26,7 +26,7 @@ class MemUsageMonitor(threading.Thread):
             torch.cuda.mem_get_info()
             torch.cuda.memory_stats(self.device)
         except Exception as e:  # AMD or whatever
-            print(f"Warning: caught exception '{e}', memory monitor disabled")
+            print(f"警告：捕获到异常 '{e}', 内存监视器已禁用")
             self.disabled = True
 
     def run(self):
@@ -56,7 +56,7 @@ class MemUsageMonitor(threading.Thread):
         for k, v in self.read().items():
             print(k, -(v // -(1024 ** 2)))
 
-        print(self, 'raw torch memory stats:')
+        print(self, '原始torch记忆统计信息:')
         tm = torch.cuda.memory_stats(self.device)
         for k, v in tm.items():
             if 'bytes' not in k:

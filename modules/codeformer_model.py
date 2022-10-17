@@ -58,7 +58,7 @@ def setup_model(dirname):
                 if len(model_paths) != 0:
                     ckpt_path = model_paths[0]
                 else:
-                    print("Unable to load codeformer model.")
+                    print("Unable to load codeformer model.|无法加载编码器模型。")
                     return None, None
                 net = net_class(dim_embd=512, codebook_size=1024, n_head=8, n_layers=9, connect_list=['32', '64', '128', '256']).to(devices.device_codeformer)
                 checkpoint = torch.load(ckpt_path)['params_ema']
@@ -105,7 +105,7 @@ def setup_model(dirname):
                         del output
                         torch.cuda.empty_cache()
                     except Exception as error:
-                        print(f'\tFailed inference for CodeFormer: {error}', file=sys.stderr)
+                        print(f'\tCodeFormer演算失败: {error}', file=sys.stderr)
                         restored_face = tensor2img(cropped_face_t, rgb2bgr=True, min_max=(-1, 1))
 
                     restored_face = restored_face.astype('uint8')
@@ -134,7 +134,7 @@ def setup_model(dirname):
         shared.face_restorers.append(codeformer)
 
     except Exception:
-        print("Error setting up CodeFormer:", file=sys.stderr)
+        print("Error setting up CodeFormer|设置CodeFormer时出错:", file=sys.stderr)
         print(traceback.format_exc(), file=sys.stderr)
 
    # sys.path = stored_sys_path

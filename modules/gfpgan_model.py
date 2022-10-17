@@ -34,7 +34,7 @@ def gfpgann():
         latest_file = max(models, key=os.path.getctime)
         model_file = latest_file
     else:
-        print("Unable to load gfpgan model!")
+        print("Unable to load gfpgan model!|无法加载gfpgan模型！")
         return None
     model = gfpgan_constructor(model_path=model_file, upscale=1, arch='clean', channel_multiplier=2, bg_upsampler=None)
     loaded_gfpgan_model = model
@@ -111,5 +111,5 @@ def setup_model(dirname):
 
         shared.face_restorers.append(FaceRestorerGFPGAN())
     except Exception:
-        print("Error setting up GFPGAN:", file=sys.stderr)
+        print("Error setting up GFPGAN设置GFPGAN时出错:", file=sys.stderr)
         print(traceback.format_exc(), file=sys.stderr)

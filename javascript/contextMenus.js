@@ -94,7 +94,7 @@ contextMenuInit = function(){
     }
     gradioApp().addEventListener("click", function(e) {
       let source = e.composedPath()[0]
-      if(source.id && source.indexOf('check_progress')>-1){
+      if(source.id && source.id.indexOf('check_progress')>-1){
         return
       }
       
@@ -145,10 +145,10 @@ addContextMenuEventListener = initResponse[2];
     500)
   }
 
-  appendContextMenuOption('#txt2img_generate','Generate forever|连续生成',function(){
+  appendContextMenuOption('#txt2img_generate','Generate forever',function(){
     generateOnRepeat('#txt2img_generate','#txt2img_interrupt');
   })
-  appendContextMenuOption('#img2img_generate','Generate forever|连续生成',function(){
+  appendContextMenuOption('#img2img_generate','Generate forever',function(){
     generateOnRepeat('#img2img_generate','#img2img_interrupt');
   })
 
@@ -156,10 +156,10 @@ addContextMenuEventListener = initResponse[2];
     clearInterval(window.generateOnRepeatInterval) 
   }
 
-  appendContextMenuOption('#txt2img_interrupt','Cancel generate foreve|取消连续生成r',cancelGenerateForever)
-  appendContextMenuOption('#txt2img_generate', 'Cancel generate forever|取消连续生成',cancelGenerateForever)
-  appendContextMenuOption('#img2img_interrupt','Cancel generate forever|取消连续生成',cancelGenerateForever)
-  appendContextMenuOption('#img2img_generate', 'Cancel generate forever|取消连续生成',cancelGenerateForever)
+  appendContextMenuOption('#txt2img_interrupt','Cancel generate forever',cancelGenerateForever)
+  appendContextMenuOption('#txt2img_generate', 'Cancel generate forever',cancelGenerateForever)
+  appendContextMenuOption('#img2img_interrupt','Cancel generate forever',cancelGenerateForever)
+  appendContextMenuOption('#img2img_generate', 'Cancel generate forever',cancelGenerateForever)
 
   appendContextMenuOption('#roll','Roll three',
     function(){ 
