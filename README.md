@@ -1,5 +1,5 @@
 Colab运行时添加这两行代码到第一行gitclone下面即可</br>
-!git clone https://github.com/wdigfuew/Novelai-ToChinese</br>
+!git clone https://github.com/wdigfuew/Novelai-ToChinese </br>
 !cp -r /content/Novelai-ToChinese/** /content/stable-diffusion-webui/</br>
 此项目是B站up：只剩一瓶辣椒酱 的汉化包</br>
 介于原UP会时不时更新代码，就不将整合后的文件仍上来了</br>
