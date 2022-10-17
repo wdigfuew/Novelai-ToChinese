@@ -1,4 +1,4 @@
-Colab运行时添加这两行代码到第一行gitclone下面即可
+Colab运行时添加这两行代码到第一行gitclone下面即可</br>
 !git clone https://github.com/wdigfuew/Novelai-ToChinese
 !cp -r /content/Novelai-ToChinese/** /content/stable-diffusion-webui/
 此项目是B站up：只剩一瓶辣椒酱 的汉化包
